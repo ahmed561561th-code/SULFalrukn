@@ -29,7 +29,7 @@
                 font-family: 'Tajawal', sans-serif !important;
                 background: #ffffff !important;
                 color: #000000 !important;
-                font-size: 14px !important; /* تم زيادة الخط الأساسي للطباعة */
+                font-size: 14px !important;
                 line-height: 1.3 !important;
             }
             .no-print { display: none !important; }
@@ -376,9 +376,7 @@
     </div>
 
     <script>
-        const STORAGE_WORKERS = 'factory_workers_list_v3';
-        const STORAGE_RECORDS = 'factory_advances_records_v3';
-        const STORAGE_CREDENTIALS = 'factory_user_credentials_v3';
+        const FIREBASE_DB_URL = 'https://sulfalrukn-default-rtdb.firebaseio.com/';
 
         let workers = [];
         let records = [];
@@ -386,10 +384,66 @@
         let currentUser = null;
 
         document.addEventListener('DOMContentLoaded', () => {
-            loadData();
             setupDefaults();
             checkSession();
+            initRealtimeSync();
         });
+
+        // جلب البيانات ومزامنتها لحظياً من Firebase
+        function initRealtimeSync() {
+            fetch(FIREBASE_DB_URL + '.json')
+                .then(res => res.json())
+                .then(data => {
+                    if (data) {
+                        workers = data.workers ? Object.values(data.workers) : [];
+                        records = data.records ? Object.values(data.records) : [];
+                        credentials = data.credentials || {};
+                    }
+                    
+                    // إذا كانت البيانات فارغة لأول مرة، نضع بيانات افتراضية ونحفظها للفايربيز
+                    if (workers.length === 0) {
+                        workers = ['أحمد محمود إبراهيم', 'محمد علي حسن', 'محمود السيد عبد الله', 'إبراهيم مصطفى خليل'];
+                        workers.forEach((w, index) => {
+                            if (!credentials[w]) {
+                                credentials[w] = { username: `worker${index+1}`, password: `123${index+1}` };
+                            }
+                        });
+                        syncToFirebase();
+                    }
+                    
+                    refreshUI();
+                })
+                .catch(err => {
+                    console.error("خطأ في الاتصال بقاعدة البيانات:", err);
+                    showAlert('خطأ اتصال', 'تعذر الاتصال بقاعدة البيانات اللحظية.', 'error');
+                });
+        }
+
+        // دالة عامة لحفظ وتحديث كافة البيانات في Firebase
+        function syncToFirebase() {
+            const payload = {
+                workers: workers,
+                records: records.reduce((acc, curr) => { acc[curr.id] = curr; return acc; }, {}),
+                credentials: credentials
+            };
+
+            fetch(FIREBASE_DB_URL + '.json', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            }).then(() => {
+                refreshUI();
+            }).catch(err => console.error("خطأ في الحفظ:", err));
+        }
+
+        function refreshUI() {
+            if (!currentUser) return;
+            if (currentUser.role === 'admin') {
+                renderApp();
+            } else {
+                renderWorkerDashboard();
+            }
+        }
 
         function checkSession() {
             const savedSession = sessionStorage.getItem('factory_current_session');
@@ -473,47 +527,6 @@
             document.getElementById('current-month-label').innerText = monthStr;
             document.getElementById('worker-panel-month').innerText = monthStr;
         }
-
-        function loadData() {
-            const savedWorkers = localStorage.getItem(STORAGE_WORKERS);
-            const savedRecords = localStorage.getItem(STORAGE_RECORDS);
-            const savedCreds = localStorage.getItem(STORAGE_CREDENTIALS);
-
-            if (savedWorkers) {
-                try { workers = JSON.parse(savedWorkers); } catch(e) { workers = []; }
-            } else {
-                workers = ['أحمد محمود إبراهيم', 'محمد علي حسن', 'محمود السيد عبد الله', 'إبراهيم مصطفى خليل'];
-                saveWorkers();
-            }
-
-            if (savedRecords) {
-                try { records = JSON.parse(savedRecords); } catch(e) { records = []; }
-            } else {
-                const now = new Date();
-                const y = now.getFullYear();
-                const m = String(now.getMonth() + 1).padStart(2, '0');
-                records = [
-                    { id: '1', workerName: 'أحمد محمود إبراهيم', advance: 500, delayHours: 1.5, date: `${y}-${m}-04`, notes: 'سلفة طارئة' },
-                    { id: '2', workerName: 'محمد علي حسن', advance: 300, delayHours: 0, date: `${y}-${m}-09`, notes: 'سلفة أسبوعية' }
-                ];
-                saveRecords();
-            }
-
-            if (savedCreds) {
-                try { credentials = JSON.parse(savedCreds); } catch(e) { credentials = {}; }
-            } else {
-                workers.forEach((w, index) => {
-                    if (!credentials[w]) {
-                        credentials[w] = { username: `worker${index+1}`, password: `123${index+1}` };
-                    }
-                });
-                saveCredentials();
-            }
-        }
-
-        function saveWorkers() { localStorage.setItem(STORAGE_WORKERS, JSON.stringify(workers)); }
-        function saveRecords() { localStorage.setItem(STORAGE_RECORDS, JSON.stringify(records)); }
-        function saveCredentials() { localStorage.setItem(STORAGE_CREDENTIALS, JSON.stringify(credentials)); }
 
         function renderWorkerDashboard() {
             if (!currentUser || currentUser.role !== 'worker') return;
@@ -649,7 +662,10 @@
             renderUsersCredentialsList();
             document.getElementById('users-modal').classList.remove('hidden');
         }
-        function closeUsersModal() { document.getElementById('users-modal').classList.add('hidden'); }
+        function closeUsersModal() { 
+            syncToFirebase();
+            document.getElementById('users-modal').classList.add('hidden'); 
+        }
 
         function renderUsersCredentialsList() {
             const container = document.getElementById('users-list-container');
@@ -677,7 +693,6 @@
         function updateCredential(workerName, field, value) {
             if (!credentials[workerName]) credentials[workerName] = {};
             credentials[workerName][field] = value.trim();
-            saveCredentials();
         }
 
         function renderWorkersListModal() {
@@ -703,10 +718,8 @@
 
             workers.push(name);
             credentials[name] = { username: name.split(' ')[0] + Math.floor(Math.random()*100), password: '123' };
-            saveWorkers();
-            saveCredentials();
+            syncToFirebase();
             nameInput.value = '';
-            renderApp();
             showAlert('نجاح', 'تم إضافة العامل وحساب دخوله بنجاح.', 'success');
         }
 
@@ -714,9 +727,7 @@
             if (confirm(`هل أنت متأكد من حذف العامل "${name}"؟`)) {
                 workers = workers.filter(w => w !== name);
                 delete credentials[name];
-                saveWorkers();
-                saveCredentials();
-                renderApp();
+                syncToFirebase();
                 showAlert('تم الحذف', 'تم حذف العامل بنجاح.', 'success');
             }
         }
@@ -764,17 +775,15 @@
                 records.push({ id: Date.now().toString(), workerName, advance, delayHours, date, notes });
             }
 
-            saveRecords();
+            syncToFirebase();
             closeTransactionModal();
-            renderApp();
             showAlert('نجاح', 'تم حفظ المعاملة بنجاح.', 'success');
         }
 
         function deleteTransaction(id) {
             if (confirm('هل أنت متأكد من حذف هذا السجل نهائياً؟')) {
                 records = records.filter(r => r.id !== id);
-                saveRecords();
-                renderApp();
+                syncToFirebase();
                 showAlert('تم الحذف', 'تم حذف السجل بنجاح.', 'success');
             }
         }
@@ -789,9 +798,6 @@
             }, 100);
         }
 
-        // ==============================================
-        // قوالب الطباعة مع تكبير الخطوط والكلمات البارزة (Bold)
-        // ==============================================
         function printIndividualReceipt(id) {
             const item = records.find(r => r.id === id);
             if (!item) return;
